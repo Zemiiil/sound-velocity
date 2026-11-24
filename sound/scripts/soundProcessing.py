@@ -28,9 +28,7 @@ DRH = 2
 T_BREATH = 25.0
 I_CO2_REAL = 2 / (1.29 - 1)
 RQ = 0.8
-NBOOT = 20000
 STUDENT95 = {2: 12.71, 3: 4.30, 4: 3.18, 5: 2.78, 6: 2.57, 7: 2.45, 8: 2.36, 9: 2.31, 10: 2.26}
-rng = np.random.default_rng(2026)
 
 t, rh = s.readConditions(dataPath + "conditions.txt")
 
@@ -135,14 +133,10 @@ co2BrA = np.polyval(fitWet, breath["c"])
 co2B, cStarB = co2Diff(air["tau"], breath["tau"])
 slopeWet = abs(fitWet[0])
 
-boot = []
-for _ in range(NBOOT):
-    ta = rng.choice(air["taus"], air["n"]).mean()
-    tb = rng.choice(breath["taus"], breath["n"]).mean()
-    boot.append(co2Diff(ta, tb)[0])
-boot = np.array(boot)
-bStat = boot.std()
-bLo, bHi = np.percentile(boot, [2.5, 97.5])
+bStat = slopeWet * cStarB * np.hypot(air["se"] / air["tau"], breath["se"] / breath["tau"])
+nuB = (air["se"] ** 2 + breath["se"] ** 2) ** 2 / (air["se"] ** 4 / (air["n"] - 1) + breath["se"] ** 4 / (breath["n"] - 1))
+tB = STUDENT95[int(nuB) + 1]
+bLo, bHi = co2B - tB * bStat, co2B + tB * bStat
 bMethod = slopeWet * cStarB * np.hypot(air["method"] / air["tau"], breath["method"] / breath["tau"])
 bT = max(abs(co2Diff(air["tau"], breath["tau"], temp=t + DT_ROOM)[0] - co2B),
          abs(co2Diff(air["tau"], breath["tau"], temp=t - DT_ROOM)[0] - co2B))
@@ -159,30 +153,24 @@ xBr = np.array([1 / np.sqrt(records[n]["fc"]) for n in breathNames])
 yBr = breath["taus"]
 
 
-def dispersion(x, y, xb, yb):
-    k, tau0 = np.polyfit(x, y, 1)
-    tauBr0 = np.mean(yb - k * xb)
-    co2 = np.polyval(fitWet, L / (tauBr0 * 1e-6))
-    co2air = np.polyval(fitRoom, L / (tau0 * 1e-6))
-    return k, tau0, tauBr0, co2, co2air
-
-
-kDisp, tau0, tauBr0, co2C, co2AirC = dispersion(xAir, yAir, xBr, yBr)
+kDisp, tau0 = np.polyfit(xAir, yAir, 1)
+nA = len(xAir)
+sRes = np.sqrt(np.sum((yAir - kDisp * xAir - tau0) ** 2) / (nA - 2))
+sxx = np.sum((xAir - xAir.mean()) ** 2)
+kSe = sRes / np.sqrt(sxx)
+tau0Se = sRes * np.sqrt(1 / nA + xAir.mean() ** 2 / sxx)
+yBr0 = yBr - kDisp * xBr
+tauBr0 = yBr0.mean()
+tauBr0Se = np.sqrt(yBr0.var(ddof=1) / len(yBr) + (xBr.mean() * kSe) ** 2)
+co2C = np.polyval(fitWet, L / (tauBr0 * 1e-6))
+co2AirC = np.polyval(fitRoom, L / (tau0 * 1e-6))
+cStat = slopeWet * (L / (tauBr0 * 1e-6)) * tauBr0Se / tauBr0
 rDisp = np.corrcoef(xAir, yAir)[0, 1]
-perm = np.array([np.corrcoef(xAir, rng.permutation(yAir))[0, 1] for _ in range(NBOOT)])
-pDisp = np.mean(np.abs(perm) >= abs(rDisp))
-bootC = []
-for _ in range(NBOOT):
-    ia = rng.integers(0, len(xAir), len(xAir))
-    if np.ptp(xAir[ia]) == 0:
-        continue
-    ib = rng.integers(0, len(xBr), len(xBr))
-    res = dispersion(xAir[ia], yAir[ia], xBr[ib], yBr[ib])
-    bootC.append((res[1], res[3]))
-bootC = np.array(bootC)
-tau0Se, cStat = bootC[:, 0].std(), bootC[:, 1].std()
+perm = np.array([np.corrcoef(xAir, pm)[0, 1] for pm in itertools.permutations(yAir)])
+pDisp = np.mean(np.abs(perm) >= abs(rDisp) - 1e-12)
 cInf = L / (tau0 * 1e-6)
 cInfSe = cInf * tau0Se / tau0
+co2AirCSe = abs(fitRoom[0]) * cInfSe
 
 eta = lambda co2: (co2 / 100 - 0.0003) / 0.2095
 etaB, etaBe = eta(co2B), bTotal / 100 / 0.2095
@@ -219,12 +207,12 @@ add("Прямые: воздух %s, выдох %s; расчётная скоро
     (np.array2string(fitRoom, precision=4), np.array2string(fitWet, precision=4), cAirTheory))
 add("A. По прямым без поправок: воздух %.1f %%, выдох %.1f %%" % (co2AirA, co2BrA))
 add("B. Разностный метод: CO2 = %.2f %%, c* = %.2f м/с" % (co2B, cStarB))
-add("   случайная (бутстрэп) %.2f, 95%% ДИ [%.2f; %.2f]; метода %.2f; t %.2f; rh %.2f; gamma(CO2) %.2f; итого ± %.2f %%" %
-    (bStat, bLo, bHi, bMethod, bT, bRH, bGamma, bTotal))
+add("   случайная %.2f, 95%% интервал (Стьюдент, nu = %.2f, t = %.2f) [%.2f; %.2f]; метода %.2f; t %.2f; rh %.2f; gamma(CO2) %.2f; итого ± %.2f %%" %
+    (bStat, nuB, tB, bLo, bHi, bMethod, bT, bRH, bGamma, bTotal))
 add("   если газ выдоха при %.0f C: %+.2f %%" % (T_BREATH, bBreathT))
 add("C. Дисперсия: %d записей воздуха, r = %.3f, p = %.3f; tau0 = %.1f ± %.1f мкс, c(f->inf) = %.2f ± %.2f м/с" %
     (len(dispNames), rDisp, pDisp, tau0, tau0Se, cInf, cInfSe))
-add("   CO2 воздуха после поправки %.2f %%, CO2 выдоха после поправки %.2f ± %.2f %%" % (co2AirC, co2C, cStat))
+add("   CO2 воздуха после поправки %.2f ± %.2f %%, CO2 выдоха после поправки %.2f ± %.2f %%" % (co2AirC, co2AirCSe, co2C, cStat))
 add("Доля усвоенного O2 (по CO2): B %.3f ± %.3f, C %.3f ± %.3f; с дыхательным коэффициентом %.1f: %.3f" %
     (etaB, etaBe, etaC, etaCe, RQ, uptakeB))
 if sens:
