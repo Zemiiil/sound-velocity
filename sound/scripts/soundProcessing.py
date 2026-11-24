@@ -274,6 +274,43 @@ ax2.legend()
 fig.tight_layout()
 fig.savefig(plotsPath + "least-squares.png", dpi=150)
 
+fig, ax = plt.subplots(figsize=(8, 4.5))
+ax.plot(tt, mic1[w0:w1], color=AIRC, label="микрофон 1, среднее %.0f" % np.mean(mic1[w0:w1]))
+ax.plot(tt, mic0[w0 + n:w1 + n], color=INK, ls="--", label="микрофон 0, сдвинут на N, среднее %.0f" % np.mean(mic0[w0 + n:w1 + n]))
+ax.axhline(np.mean(mic1[w0:w1]), color=AIRC, lw=0.8)
+ax.axhline(np.mean(mic0[w0 + n:w1 + n]), color=INK, lw=0.8)
+ax.set_xlabel("Время по микрофону 1, мс")
+ax.set_ylabel("Код АЦП")
+ax.set_title("Тот же участок до нормировки")
+ax.grid()
+ax.legend(loc="lower right")
+fig.tight_layout()
+fig.savefig(plotsPath + "offsets.png", dpi=150)
+
+i = int(np.argmin(d["err"]))
+S = d["err"] / (w1 - w0)
+xs, ys = d["shifts"][i - 1:i + 2], S[i - 1:i + 2]
+A = (ys[0] - 2 * ys[1] + ys[2]) / 2
+B = (ys[2] - ys[0]) / 2
+xf = np.linspace(-2.2, 2.2, 200)
+fig, ax = plt.subplots(figsize=(8, 4.5))
+ax.plot(d["shifts"][i - 4:i + 5], S[i - 4:i + 5], "o", color="#9AA0B4", label="S(N) в целых точках")
+ax.plot(xs, ys, "o", color=INK, ms=9, label="три точки у минимума")
+ax.plot(xs[1] + xf, A * xf ** 2 + B * xf + ys[1], color=BRC, label="парабола через них")
+dv = -B / (2 * A)
+ax.plot(xs[1] + dv, ys[1] - B ** 2 / (4 * A), "*", color=BRC, ms=16, label="вершина: N = %.2f" % (xs[1] + dv))
+for k, (x, y) in enumerate(zip(xs, ys)):
+    ax.annotate("%.4f" % y, (x, y), textcoords="offset points", xytext=(-10 if k == 0 else 10, 10),
+                ha="right" if k == 0 else "left", fontsize=10)
+ax.set_xlabel("Сдвиг N, отсчёты")
+ax.set_ylabel("S(N) / число точек")
+ax.set_title("Минимум между отсчётами: δ = %.2f" % dv)
+ax.set_ylim(min(ys) - 0.4 * (max(ys) - min(ys)), None)
+ax.grid()
+ax.legend(loc="upper left")
+fig.tight_layout()
+fig.savefig(plotsPath + "parabola.png", dpi=150)
+
 chosen = airNames + breathNames
 cols = 5
 rows_ = int(np.ceil(len(chosen) / cols))
@@ -295,19 +332,36 @@ fig.supxlabel("Время, мс")
 fig.tight_layout()
 fig.savefig(plotsPath + "aligned.png", dpi=130)
 
-fig, ax = plt.subplots(figsize=(9, 4.8))
-for i, (g, group, color) in enumerate([(air, airNames, AIRC), (breath, breathNames, BRC)]):
-    x = i + np.linspace(-0.18, 0.18, len(group))
-    ax.errorbar(x, g["taus"], yerr=[records[nm]["sigma"] * 4 for nm in group], fmt="o", color=color, ms=9, capsize=3)
-    for j, (xi, yi, nm) in enumerate(zip(x, g["taus"], group)):
-        ax.annotate(nm, (xi, yi), textcoords="offset points", xytext=(8, -4) if j % 2 == 0 else (-8, 6),
-                    ha="left" if j % 2 == 0 else "right", fontsize=9)
-    ax.errorbar(i + 0.38, g["tau"], yerr=g["t95"], fmt="s", color=INK, ms=10, capsize=6)
-ax.set_xticks([0, 1])
-ax.set_xticklabels(["Воздух", "Выдох"])
-ax.set_xlim(-0.5, 1.75)
+fig, ax = plt.subplots(figsize=(10, 5.2))
+pos, ticks, labels = 0, [], []
+for g, group, color, title in [(air, airNames, AIRC, "Воздух"), (breath, breathNames, BRC, "Выдох")]:
+    order = sorted(range(len(group)), key=lambda k: (len(group[k]), group[k]))
+    names = [group[k] for k in order]
+    taus = np.array(g["taus"])[order]
+    xs = pos + np.arange(len(names))
+    a0, a1 = xs[0] - 0.45, xs[-1] + 0.45
+    ax.fill_between([a0, a1], g["tau"] - g["t95"], g["tau"] + g["t95"], color=color, alpha=0.13, lw=0)
+    ax.hlines(g["tau"], a0, a1, color=color, ls="--", lw=1.8)
+    ax.errorbar(xs, taus, yerr=[records[nm]["sigma"] * 4 for nm in names], fmt="o", color=color, ms=9, capsize=4)
+    ax.text((xs[0] + xs[-1]) / 2, 0.97, "%s: %.1f ± %.1f мкс (95 %%)" % (title, g["tau"], g["t95"]), transform=ax.get_xaxis_transform(),
+            ha="center", va="top", color=color, fontsize=12, fontweight="bold")
+    ticks += list(xs)
+    labels += names
+    pos += len(names) + 1
+ax.set_xticks(ticks)
+ax.set_xticklabels(labels)
+ax.set_xlim(-0.8, pos - 1.2)
+lo = min(air["tau"] - air["t95"], breath["tau"] - breath["t95"])
+hi = max(air["tau"] + air["t95"], breath["tau"] + breath["t95"])
+ax.set_ylim(lo - 8, hi + 10)
+ax.set_xlabel("Запись (одна точка — один хлопок)")
 ax.set_ylabel("Задержка τ, мкс")
 ax.grid(axis="y")
+ax.legend(handles=[
+    plt.Line2D([], [], marker="o", ls="", color="#6C7A89", ms=8, label="задержка записи, усы — погрешность выбора участка"),
+    plt.Line2D([], [], ls="--", color="#6C7A89", label="среднее по серии"),
+    plt.matplotlib.patches.Patch(color="#6C7A89", alpha=0.2, label="95 % доверительный интервал среднего")],
+    loc="lower right", fontsize=9, framealpha=0.95)
 ax.set_title("Выдох медленнее на %.0f ± %.0f мкс (p = %.3f)" % (dTau, dTauSe, pPerm))
 fig.tight_layout()
 fig.savefig(plotsPath + "delays.png", dpi=150)
